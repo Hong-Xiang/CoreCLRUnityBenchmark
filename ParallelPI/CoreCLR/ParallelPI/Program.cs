@@ -10,14 +10,18 @@ using System.Reactive.Linq;
 using System.Reactive;
 using System.Reactive.Concurrency;
 
+
 struct PiCalcuateChunk
 {
-    double Calculate(int start, int end, int step)
+    public required long Samples { get; init; }
+    public required double RelativeOffset { get; init; }
+    public double Calculate()
     {
-        var result = 0.0;
-        for (int i = start; i < end; i++)
+        double result = 0.0;
+        double step = 1.0 / Samples;
+        for (var i = 0; i < Samples; i++)
         {
-            var x = (i + 0.5) * step;
+            var x = (i + RelativeOffset) * step;
             var f = 4.0 / (1.0 + x * x);
             result += f * step;
         }
@@ -25,141 +29,133 @@ struct PiCalcuateChunk
     }
 }
 
-interface ParallelPICalculator
+interface PiScheduler
 {
-    double Calculate(int chunks, int stepsPreChunk);
+    void Run(int chunks, Action<int> job);
 }
+
+class ParallelScheduler : PiScheduler
+{
+    public void Run(int chunks, Action<int> job)
+    {
+        Parallel.For(0, chunks, (i, state) => job(i));
+    }
+}
+
+class ThreadTaskScheduler : PiScheduler
+{
+    public void Run(int chunks, Action<int> job)
+    {
+        var tasks = Enumerable.Range(0, chunks).Select(i =>
+                    {
+                        return Task.Factory.StartNew(() =>
+                                        job(i));
+                    }).ToArray();
+        Task.WaitAll(tasks);
+    }
+}
+
+class AsyncTaskScheduler : PiScheduler
+{
+    public void Run(int chunks, Action<int> job)
+    {
+        var groups = 256;
+        var groupSize = (int)Math.Ceiling((float)chunks / groups);
+
+        var tasks = Enumerable.Range(0, groupSize).Select(async (ig) =>
+                    {
+                        var chunkStart = Math.Min(ig * groupSize, chunks - 1);
+                        var chunkEnd = Math.Min((ig + 1) * groupSize, chunks);
+                        for (int ic = chunkStart; ic < chunkEnd; ic++)
+                        {
+                            await Task.Factory.StartNew(() => job(ic));
+                            job(ic);
+                        }
+                    }).ToArray();
+        Task.WaitAll(tasks);
+    }
+}
+
+class ProfileReport
+{
+    public Stopwatch Stopwatch;
+    public double Result;
+}
+
 
 namespace ParallelPI
 {
     internal class Program
     {
-        const int Chunks = 65536;
-        const int ChunkSize = 65536;
         const int NumberOfSteps = 1_000_000_000;
+        const int Chunks = 65536;
+        const long ChunkSize = 65536;
         //const int Chunks = 30000;
 
         /// <summary>Main method to time various implementations of computing PI.</summary>
         static void Main()
         {
-            Console.WriteLine("Function               | Elapsed Time     | Estimated Pi         | Chunks / frame (60FPS)");
+
+            Console.WriteLine($"chunks {Chunks}, chunksize {ChunkSize}, totalSamples {Chunks * ChunkSize}");
+            Console.WriteLine("Function                              | Elapsed Time     | Estimated Pi         | est per chunk (mu s) | Chunks / second");
             Console.WriteLine("-----------------------------------------------------------------");
 
-            //Time(SerialLinqPi, nameof(SerialLinqPi));
-            //Time(ParallelLinqPi, nameof(ParallelLinqPi));
-            //Time(SerialPi, nameof(SerialPi));
-            //Time(ParallelPi, nameof(ParallelPi));
-            foreach (var _ in Enumerable.Range(0, 12))
+            Time(new ParallelScheduler(), 8);
+            Time(new ThreadTaskScheduler(), 4);
+            Time(new AsyncTaskScheduler(), 8);
+            Time((repreat) =>
             {
-                Time(ParallelPartitionerPi, nameof(ParallelPartitionerPi));
-            }
-            Time(ParallelTaskPi, nameof(ParallelTaskPi));
-            Time(ParallelRxPi, nameof(ParallelRxPi));
-            Time(ParallelAsyncTaskPi, nameof(ParallelAsyncTaskPi));
-        }
-
-        /// <summary>Times the execution of a function and outputs both the elapsed time and the function's result.</summary>
-        static void Time(
-            Func<double> estimatePi,
-            string function)
-        {
-            var sw = Stopwatch.StartNew();
-            var pi = estimatePi();
-            Console.WriteLine($"{function.PadRight(22)} | {sw.ElapsedMilliseconds,16} | {pi,20} | {Chunks / sw.Elapsed.TotalSeconds / 60}");
-        }
-
-        /// <summary>Estimates the value of PI using a LINQ-based implementation.</summary>
-        static double SerialLinqPi()
-        {
-            double step = 1.0 / (double)NumberOfSteps;
-            return (from i in Enumerable.Range(0, NumberOfSteps)
-                    let x = (i + 0.5) * step
-                    select 4.0 / (1.0 + x * x)).Sum() * step;
-        }
-
-        /// <summary>Estimates the value of PI using a PLINQ-based implementation.</summary>
-        static double ParallelLinqPi()
-        {
-            double step = 1.0 / (double)NumberOfSteps;
-            return (from i in ParallelEnumerable.Range(0, NumberOfSteps)
-                    let x = (i + 0.5) * step
-                    select 4.0 / (1.0 + x * x)).Sum() * step;
-        }
-
-        /// <summary>Estimates the value of PI using a for loop.</summary>
-        static double SerialPi()
-        {
-            double sum = 0.0;
-            double step = 1.0 / (double)NumberOfSteps;
-            for (int i = 0; i < NumberOfSteps; i++)
-            {
-                double x = (i + 0.5) * step;
-                sum += 4.0 / (1.0 + x * x);
-            }
-            return step * sum;
-        }
-
-        /// <summary>Estimates the value of PI using a Parallel.For.</summary>
-        static double ParallelPi()
-        {
-            double sum = 0.0;
-            double step = 1.0 / (double)NumberOfSteps;
-            object monitor = new object();
-            Parallel.For(0, NumberOfSteps, () => 0.0, (i, state, local) =>
-            {
-                double x = (i + 0.5) * step;
-                return local + 4.0 / (1.0 + x * x);
-            }, local => { lock (monitor) sum += local; });
-            return step * sum;
-        }
-
-        /// <summary>Estimates the value of PI using a Parallel.ForEach and a range partitioner.</summary>
-        static double ParallelPartitionerPi()
-        {
-            double sum = 0.0;
-            double step = 1.0 / (double)NumberOfSteps;
-            object monitor = new object();
-            var chunkSize = (int)Math.Ceiling((float)NumberOfSteps / Chunks);
-            Console.WriteLine($"chunks {Chunks}, chunk size {chunkSize}");
-            Parallel.ForEach(Partitioner.Create(0, NumberOfSteps, chunkSize), () => 0.0, (range, state, local) =>
-            {
-                for (int i = range.Item1; i < range.Item2; i++)
+                return Enumerable.Range(0, repreat).Select((_) =>
                 {
-                    double x = (i + 0.5) * step;
-                    local += 4.0 / (1.0 + x * x);
-                }
-                return local;
-            }, local => { lock (monitor) sum += local; });
-            return step * sum;
-        }
-
-        class IndexValue
-        {
-            public int Value { get; set; }
-        }
-
-        static double ParallelTaskPi()
-        {
-            double step = 1.0 / (double)NumberOfSteps;
-            var chunkSize = (int)Math.Ceiling((float)NumberOfSteps / Chunks);
-            Console.WriteLine($"chunks {Chunks}, chunk size {chunkSize}");
-            var tasks = Enumerable.Range(0, Chunks).Select(index =>
+                    return ParallelPartitionAutoArray(Chunks, ChunkSize);
+                });
+            }, nameof(ParallelPartitionAutoArray), 8);
+            Time((repreat) =>
             {
-                return Task.Factory.StartNew(() =>
-                                {
-                                    var start = Math.Min(index * chunkSize, NumberOfSteps - 1);
-                                    var end = Math.Min((index + 1) * chunkSize, NumberOfSteps);
-                                    double local = 0.0;
-                                    for (int i = start; i < end; i++)
-                                    {
-                                        double x = (i + 0.5) * step;
-                                        local += 4.0 / (1.0 + x * x);
-                                    }
-                                    return local;
-                                });
-            }).ToArray();
-            return Task.WhenAll(tasks).Result.Sum() / NumberOfSteps;
+                return Enumerable.Range(0, repreat).Select((_) =>
+                {
+                    return ParallelPartitionAutoThreadLocal(Chunks, ChunkSize);
+                });
+            }, nameof(ParallelPartitionAutoThreadLocal), 8);
+            Time((repreat) =>
+            {
+                return Enumerable.Range(0, repreat).Select((_) =>
+                {
+                    return ParallelPartitionInlineThreadLocal(Chunks, ChunkSize);
+                });
+            }, nameof(ParallelPartitionInlineThreadLocal), 8);
+
+
         }
+        static void Time(Func<int, IEnumerable<ProfileReport>> f, string name, int repeat)
+        {
+            var pr = f(repeat).ToArray();
+            var averageTime = pr.Select(x => x.Stopwatch.ElapsedMilliseconds).Average();
+            var sw = pr.Last().Stopwatch;
+            Console.WriteLine($"{name,37} | {averageTime,16} | {pr.Last().Result,20} | {averageTime * 1000 / Chunks,20} | {Chunks / sw.Elapsed.TotalSeconds}");
+        }
+        /// <summary>Times the execution of a function and outputs both the elapsed time and the function's result.</summary>
+        static void Time(PiScheduler scheduler, int repeat)
+        {
+            Time((repeat) =>
+            {
+                return Enumerable.Range(0, repeat).Select((_) =>
+                {
+                    var results = new double[Chunks];
+                    var sw = new Stopwatch();
+                    sw.Start();
+                    scheduler.Run(Chunks, (chunkIndex) =>
+                                   {
+                                       results[chunkIndex] = new PiCalcuateChunk { RelativeOffset = (double)chunkIndex / Chunks, Samples = ChunkSize }.Calculate();
+                                   });
+                    sw.Stop();
+                    return new ProfileReport { Stopwatch = sw, Result = results.Average() };
+                });
+            }, scheduler.GetType().Name, repeat);
+            var sw = Stopwatch.StartNew();
+        }
+
+
 
         static async Task<double> SumOfPiSamples(int index, int chunkSize, double step)
         {
@@ -171,58 +167,87 @@ namespace ParallelPI
                 for (int i = start; i < end; i++)
                 {
                     double x = (i + 0.5) * step;
-                    local += 4.0 / (1.0 + x * x);
+                    local += 4.0 / (1.0 + x * x) * step;
                 }
                 return local;
             });
         }
 
-        static async ValueTask<double> SumOfPiMultipleSamples(int chunkStart, int chunkEnd, int chunkSize, double step)
+        static ProfileReport ParallelPartitionAutoArray(int chunks, long chunkSize)
         {
-            double local = 0.0;
-            for (int ic = chunkStart; ic < chunkEnd; ic++)
+            object monitor = new object();
+            var results = new double[chunks];
+            var sw = Stopwatch.StartNew();
+            Parallel.ForEach(Enumerable.Range(0, chunks), (index) =>
             {
-                local += await SumOfPiSamples(ic, chunkSize, step);
-            }
-            return local;
+                results[index] = new PiCalcuateChunk { RelativeOffset = (double)index / chunks, Samples = chunkSize }.Calculate();
+            });
+            sw.Stop();
+            return new ProfileReport
+            {
+                Result = results.Average(),
+                Stopwatch = sw,
+            };
         }
 
-        static double ParallelAsyncTaskPi()
+
+        static ProfileReport ParallelPartitionAutoThreadLocal(int chunks, long chunkSize)
         {
-            double step = 1.0 / (double)NumberOfSteps;
-            var chunkSize = (int)Math.Ceiling((float)NumberOfSteps / Chunks);
-            Console.WriteLine($"chunks {Chunks}, chunk size {chunkSize}");
-            var groups = 128;
-            var groupSize = (int)Math.Ceiling((float)Chunks / groups);
-            var tasks = Enumerable.Range(0, groupSize).Select(async (ig) =>
-                        {
-                            var chunkStart = Math.Min(ig * groupSize, Chunks - 1);
-                            var chunkEnd = Math.Min((ig + 1) * groupSize, Chunks);
-                            return await SumOfPiMultipleSamples(chunkStart, chunkEnd, chunkSize, step);
-                        });
-            return Task.WhenAll(tasks).Result.Sum() / NumberOfSteps;
+            object monitor = new object();
+            var sw = Stopwatch.StartNew();
+            var result = 0.0;
+            var count = 0L;
+            Parallel.ForEach(Partitioner.Create(0L, chunks * chunkSize), () => (0.0, 0L), (range, state, local) =>
+            {
+                var samples = range.Item2 - range.Item1;
+                var relativeOffset = (range.Item1 + range.Item2) / 2.0 / (chunks * chunkSize);
+                var result = new PiCalcuateChunk { RelativeOffset = relativeOffset, Samples = samples }.Calculate();
+                return (local.Item1 + result, local.Item2 + 1);
+            }, (local) =>
+            {
+                lock (monitor)
+                {
+                    result += local.Item1;
+                    count += local.Item2;
+                }
+            });
+            sw.Stop();
+            return new ProfileReport
+            {
+                Result = result / count,
+                Stopwatch = sw,
+            };
         }
 
-        static double ParallelRxPi()
+        static ProfileReport ParallelPartitionInlineThreadLocal(int chunks, long chunkSize)
         {
-            var samples = NumberOfSteps;
-            double step = 1.0 / (double)samples;
-            var chunkSize = (int)Math.Ceiling((float)samples / Chunks);
-            Console.WriteLine($"chunk size {chunkSize}");
-            var o = Observable.Range(0, Chunks).Select(index => Observable.Start(
-                           () =>
-                           {
-                               var start = Math.Min(index * chunkSize, samples - 1);
-                               var end = Math.Min((index + 1) * chunkSize, samples);
-                               double local = 0.0;
-                               for (int i = start; i < end; i++)
-                               {
-                                   double x = (i + 0.5) * step;
-                                   local += 4.0 / (1.0 + x * x);
-                               }
-                               return local;
-                           })).Merge<double>(12).Sum();
-            return o.Wait() / samples;
+            object monitor = new object();
+            var sw = Stopwatch.StartNew();
+            var result = 0.0;
+            var step = 1.0 / (double)(chunks * chunkSize);
+            Parallel.ForEach(Partitioner.Create(0L, chunks * chunkSize), () => 0.0, (range, state, local) =>
+            {
+                for (var i = range.Item1; i < range.Item2; i++)
+                {
+                    var x = (i + 0.5) * step;
+                    var f = 4.0 / (1.0 + x * x);
+                    local += f * step;
+                }
+                return local;
+            }, (local) =>
+            {
+                lock (monitor)
+                {
+                    result += local;
+                }
+            });
+            sw.Stop();
+            return new ProfileReport
+            {
+                Result = result,
+                Stopwatch = sw,
+            };
         }
+
     }
 }
