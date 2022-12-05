@@ -42,9 +42,12 @@ public class ParallelPIParallelFor : MonoBehaviour
             chunkSize = ChunkSize,
             results = results
         };
-        Profiler.BeginSample("ParallelPi");
-        jobData.Schedule(results.Length, 1).Complete();
-        Profiler.EndSample();
+        foreach (var b in new int[] { 1, 2, 4, 8, 16, 32, 64, 128 })
+        {
+            Profiler.BeginSample($"ParallelPi-batch-{b}");
+            jobData.Schedule(results.Length, b).Complete();
+            Profiler.EndSample();
+        }
         Debug.Log(results.ToArray().Average());
         results.Dispose();
     }
