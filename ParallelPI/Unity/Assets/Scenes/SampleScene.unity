@@ -449,7 +449,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   Chunks: 65536
-  ChunkSize: 4096
+  ChunkSize: 128
 --- !u!4 &1064283636
 Transform:
   m_ObjectHideFlags: 0
@@ -495,7 +495,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   Chunks: 65536
-  ChunkSize: 4096
+  ChunkSize: 128
 --- !u!4 &1994267730
 Transform:
   m_ObjectHideFlags: 0
