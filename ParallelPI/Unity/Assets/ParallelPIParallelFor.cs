@@ -7,6 +7,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine.Profiling;
+using Unity.Entities;
 
 [BurstCompile]
 public struct PiJobP : IJobParallelFor
@@ -50,5 +51,46 @@ public class ParallelPIParallelFor : MonoBehaviour
         }
         Debug.Log(results.ToArray().Average());
         results.Dispose();
+    }
+}
+
+[BurstCompile]
+public struct ParallelParallelJobSystem : ISystem
+{
+    NativeArray<double> results;
+    NativeArray<JobHandle> jobs;
+    int Chunks;
+    int ChunkSize;
+    public void OnCreate(ref SystemState state)
+    {
+        Chunks = 65536;
+        ChunkSize = 128;
+        results = CollectionHelper.CreateNativeArray<double>(Chunks, Allocator.Persistent);
+        jobs = CollectionHelper.CreateNativeArray<JobHandle>(Chunks, Allocator.Persistent);
+    }
+
+    public void OnDestroy(ref SystemState state)
+    {
+        results.Dispose();
+        jobs.Dispose();
+
+    }
+
+    [BurstCompile]
+    public void OnUpdate(ref SystemState state)
+    {
+        var jobData = new PiJobP
+        {
+            chunks = Chunks,
+            chunkSize = ChunkSize,
+            results = results
+        };
+        jobData.Schedule(results.Length, 8).Complete();
+        double result = 0.0;
+        foreach (var x in results)
+        {
+            result += x;
+        }
+        Debug.Log(result / results.Length);
     }
 }

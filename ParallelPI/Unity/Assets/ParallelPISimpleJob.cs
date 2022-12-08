@@ -8,6 +8,7 @@ using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine.Profiling;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Entities;
 
 [BurstCompile]
 public struct PiJobS : IJob
@@ -58,5 +59,49 @@ public class ParallelPISimpleJob : MonoBehaviour
         Debug.Log(results.ToArray().Average());
         results.Dispose();
         jobs.Dispose();
+    }
+}
+
+[BurstCompile]
+public struct ParallelSimpleJobSystem : ISystem
+{
+    NativeArray<double> results;
+    NativeArray<JobHandle> jobs;
+    int Chunks;
+    int ChunkSize;
+    public void OnCreate(ref SystemState state)
+    {
+        Chunks = 65536;
+        ChunkSize = 128;
+        results = CollectionHelper.CreateNativeArray<double>(Chunks, Allocator.Persistent);
+        jobs = CollectionHelper.CreateNativeArray<JobHandle>(Chunks, Allocator.Persistent);
+    }
+
+    public void OnDestroy(ref SystemState state)
+    {
+        results.Dispose();
+        jobs.Dispose();
+    }
+
+    [BurstCompile]
+    public void OnUpdate(ref SystemState state)
+    {
+        for (int i = 0; i < Chunks; i++)
+        {
+            jobs[i] = new PiJobS
+            {
+                chunks = Chunks,
+                chunkIndex = i,
+                chunkSize = ChunkSize,
+                results = results
+            }.Schedule();
+        }
+        JobHandle.CombineDependencies(jobs).Complete();
+        double result = 0.0;
+        foreach (var x in results)
+        {
+            result += x;
+        }
+        Debug.Log(result / results.Length);
     }
 }
