@@ -1,2 +1,4 @@
 **/bin
 **/obj
+.vs/
+x64/Release/

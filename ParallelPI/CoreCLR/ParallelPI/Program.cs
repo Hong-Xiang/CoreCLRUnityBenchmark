@@ -59,17 +59,16 @@ class AsyncTaskScheduler : PiScheduler
 {
     public void Run(int chunks, Action<int> job)
     {
-        var groups = 256;
+        var groups = 16;
         var groupSize = (int)Math.Ceiling((float)chunks / groups);
 
         var tasks = Enumerable.Range(0, groupSize).Select(async (ig) =>
                     {
                         var chunkStart = Math.Min(ig * groupSize, chunks - 1);
                         var chunkEnd = Math.Min((ig + 1) * groupSize, chunks);
-                        for (int ic = chunkStart; ic < chunkEnd; ic++)
+                        foreach (var ic in Enumerable.Range(chunkStart, groupSize).Where(ic => ic < chunks))
                         {
                             await Task.Factory.StartNew(() => job(ic));
-                            job(ic);
                         }
                     }).ToArray();
         Task.WaitAll(tasks);
@@ -89,7 +88,7 @@ namespace ParallelPI
     {
         const int NumberOfSteps = 1_000_000_000;
         const int Chunks = 65536;
-        const long ChunkSize = 65536;
+        const long ChunkSize = 128;
         //const int Chunks = 30000;
 
         /// <summary>Main method to time various implementations of computing PI.</summary>
@@ -107,23 +106,16 @@ namespace ParallelPI
             {
                 return Enumerable.Range(0, repreat).Select((_) =>
                 {
-                    return ParallelPartitionAutoArray(Chunks, ChunkSize);
+                    return ParallelAutoChunkThreadLocal(Chunks, ChunkSize);
                 });
-            }, nameof(ParallelPartitionAutoArray), 8);
+            }, nameof(ParallelAutoChunkThreadLocal), 8);
             Time((repreat) =>
             {
                 return Enumerable.Range(0, repreat).Select((_) =>
                 {
-                    return ParallelPartitionAutoThreadLocal(Chunks, ChunkSize);
+                    return ParallelNoChunkInline(Chunks, ChunkSize);
                 });
-            }, nameof(ParallelPartitionAutoThreadLocal), 8);
-            Time((repreat) =>
-            {
-                return Enumerable.Range(0, repreat).Select((_) =>
-                {
-                    return ParallelPartitionInlineThreadLocal(Chunks, ChunkSize);
-                });
-            }, nameof(ParallelPartitionInlineThreadLocal), 8);
+            }, nameof(ParallelNoChunkInline), 8);
 
 
         }
@@ -173,25 +165,8 @@ namespace ParallelPI
             });
         }
 
-        static ProfileReport ParallelPartitionAutoArray(int chunks, long chunkSize)
-        {
-            object monitor = new object();
-            var results = new double[chunks];
-            var sw = Stopwatch.StartNew();
-            Parallel.ForEach(Enumerable.Range(0, chunks), (index) =>
-            {
-                results[index] = new PiCalcuateChunk { RelativeOffset = (double)index / chunks, Samples = chunkSize }.Calculate();
-            });
-            sw.Stop();
-            return new ProfileReport
-            {
-                Result = results.Average(),
-                Stopwatch = sw,
-            };
-        }
 
-
-        static ProfileReport ParallelPartitionAutoThreadLocal(int chunks, long chunkSize)
+        static ProfileReport ParallelAutoChunkThreadLocal(int chunks, long chunkSize)
         {
             object monitor = new object();
             var sw = Stopwatch.StartNew();
@@ -219,7 +194,7 @@ namespace ParallelPI
             };
         }
 
-        static ProfileReport ParallelPartitionInlineThreadLocal(int chunks, long chunkSize)
+        static ProfileReport ParallelNoChunkInline(int chunks, long chunkSize)
         {
             object monitor = new object();
             var sw = Stopwatch.StartNew();
